@@ -489,7 +489,8 @@ HYBRID_PATCH_INPUTS = engine_patches/make_patches.py \
 
 $(HYBRID_ENGINE_DIR)/.prepared: $(HYBRID_PATCH_INPUTS) \
 		$(ENGINE)/colibri.c $(ENGINE)/inkling.c $(ENGINE)/kimi_k3.c \
-		$(ENGINE)/olmoe.c $(ENGINE)/qwen36.c $(ENGINE)/deepseek_v4.c
+		$(ENGINE)/olmoe.c $(ENGINE)/qwen36.c $(ENGINE)/qwen38.c \
+		$(ENGINE)/deepseek_v4.c
 	rm -rf $(HYBRID_ENGINE_DIR)
 	mkdir -p $(HYBRID_ENGINE_DIR)
 	cp -a $(ENGINE)/. $(HYBRID_ENGINE_DIR)/

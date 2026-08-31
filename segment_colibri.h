@@ -19,12 +19,14 @@ static int lmb_colibri_register_all(void) {
            coli_kimi_segment_adapter_register() ||
            coli_olmoe_segment_adapter_register() ||
            coli_qwen36_segment_adapter_register() ||
+           coli_qwen38_segment_adapter_register() ||
            coli_deepseek_v4_segment_adapter_register() ||
            coli_glm_edge_adapter_register() ||
            coli_inkling_edge_adapter_register() ||
            coli_kimi_edge_adapter_register() ||
            coli_olmoe_edge_adapter_register() ||
            coli_qwen36_edge_adapter_register() ||
+           coli_qwen38_edge_adapter_register() ||
            coli_deepseek_v4_edge_adapter_register();
 }
 

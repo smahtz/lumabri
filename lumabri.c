@@ -341,6 +341,7 @@ static const char *expert_node_for(const char *model_type) {
     if (strstr(model_type, "inkling"))  return "expert_node_inkling";
     if (strstr(model_type, "kimi"))     return "expert_node_kimi";
     if (strstr(model_type, "deepseek")) return "expert_node_deepseek";
+    if (strstr(model_type, "qwen4_exp")) return NULL;
     if (strstr(model_type, "qwen"))     return "expert_node_qwen36";
     return NULL;
 }
@@ -354,6 +355,7 @@ static const char *segment_engine_for(const char *model_type) {
     if (strstr(model_type, "inkling")) return "inkling";
     if (strstr(model_type, "kimi"))     return "kimi";
     if (strstr(model_type, "deepseek")) return "deepseek_v4";
+    if (strstr(model_type, "qwen4_exp")) return "qwen38";
     if (strstr(model_type, "qwen"))     return "qwen36";
     return NULL;
 }
@@ -404,6 +406,19 @@ static int local_model_u32(const char *model_dir, const char *name,
         free(json); return -1;
     }
     char *key = bad ? NULL : strstr(json, quoted);
+    /* Multimodal Qwen configs keep the text model's dimensions below
+     * `text_config`; top-level vision/MTP dimensions must not be mistaken for
+     * the transformer being advertised to Segment. */
+    char *text = bad ? NULL : strstr(json, "\"text_config\"");
+    if (text) {
+        char *limit = strstr(text + 1, "\"vision_config\"");
+        char *nested = text;
+        char *candidate;
+        while ((candidate = strstr(nested + 1, quoted)) &&
+               (!limit || candidate < limit))
+            nested = candidate;
+        if (nested != text) key = nested;
+    }
     char *colon = key ? strchr(key, ':') : NULL;
     char *end = NULL;
     errno = 0;
@@ -2035,6 +2050,7 @@ typedef struct {
 static EngKind engine_kind_of(const char *engine) {
     if (strstr(engine, "deepseek")) return EK_DEEPSEEK;
     if (strstr(engine, "olmoe"))    return EK_OLMOE;
+    if (strstr(engine, "qwen38"))   return EK_QWEN36;
     if (strstr(engine, "qwen"))     return EK_QWEN36;
     if (strstr(engine, "inkling"))  return EK_INKLING;
     if (strstr(engine, "kimi"))     return EK_KIMI;
@@ -2428,6 +2444,7 @@ static const char *engine_for(const char *model_type) {
     if (strstr(model_type, "deepseek")) return "deepseek";
     if (strstr(model_type, "kimi")) return "kimi_k3";
     if (strstr(model_type, "inkling")) return "inkling";
+    if (strstr(model_type, "qwen4_exp")) return "qwen38";
     if (strstr(model_type, "qwen")) return "qwen36";
     return "colibri";
 }
@@ -2528,8 +2545,9 @@ static int engine_spawn(const char *engine, const char *shim, const char *tracke
  * the existing signed CAS, while all transformer layers stay on the selected
  * peers. */
 static int segment_engine_spawn(const char *engine, const char *shim,
-                                const char *tracker, const char *model,
-                                const char *model_type, int ctx, Engine *e) {
+                                 const char *tracker, const char *model,
+                                 const char *model_type, const char *local_dir,
+                                 int ctx, Engine *e) {
     const char *segment_id = segment_engine_for(model_type);
     if (!segment_id) return -1;
     const char *home = getenv("HOME") ? getenv("HOME") : ".";
@@ -2541,7 +2559,7 @@ static int segment_engine_spawn(const char *engine, const char *shim,
     if (cache_env && cache_env[0]) snprintf(cache, sizeof cache, "%s", cache_env);
     else snprintf(cache, sizeof cache, "%s/.lumabri/%s/cache", home, model);
     snprintf(cas, sizeof cas, "%s/.lumabri/cas", home);
-    mkdir_p(cache);
+    if (!local_dir) mkdir_p(cache);
 
     int in_pipe[2], out_pipe[2], err_pipe[2];
     if (pipe(in_pipe) || pipe(out_pipe) || pipe(err_pipe)) return -1;
@@ -2549,9 +2567,14 @@ static int segment_engine_spawn(const char *engine, const char *shim,
     if (pid == 0) {
         dup2(in_pipe[0], 0); dup2(out_pipe[1], 1); dup2(err_pipe[1], 2);
         close(in_pipe[1]); close(out_pipe[0]); close(err_pipe[0]);
-        setenv("LD_PRELOAD", shim, 1);
-        setenv("LUMABRI_VROOT", vroot, 1);
-        setenv("LUMABRI_CACHE", cache, 1);
+        if (local_dir) {
+            unsetenv("LD_PRELOAD");
+            setenv("SNAP", local_dir, 1);
+        } else {
+            setenv("LD_PRELOAD", shim, 1);
+            setenv("LUMABRI_VROOT", vroot, 1);
+            setenv("LUMABRI_CACHE", cache, 1);
+        }
         setenv("LUMABRI_CAS", cas, 0);
         setenv("LUMABRI_TRACKER", tracker, 1);
         setenv("LUMABRI_MODEL", model, 1);
@@ -2562,7 +2585,7 @@ static int segment_engine_spawn(const char *engine, const char *shim,
             (char *)engine,
             "--serve",
             "--engine", (char *)segment_id,
-            "--model-dir", vroot,
+             "--model-dir", (char *)(local_dir ? local_dir : vroot),
             "--model", (char *)model,
             "--tracker", (char *)tracker,
             "--context", context,
@@ -2792,6 +2815,7 @@ static int find_engines(char *dst, size_t cap) {
     if (!checked_printf(cand[n], sizeof cand[n], "../moe-stream/c")) n++;
     if (!checked_printf(cand[n], sizeof cand[n], "../colibri/c")) n++;
     if (!checked_printf(cand[n], sizeof cand[n], "/usr/local/bin")) n++;
+    if (!checked_printf(cand[n], sizeof cand[n], "/usr/bin")) n++;
     for (int i = 0; i < n; i++)
         for (size_t k = 0; k < sizeof names / sizeof *names; k++) {
             char probe[1300];
@@ -3612,7 +3636,8 @@ static void kimi_tokenizer_selfheal(const char *model_dir, const char *engines_d
 /* boot one model: inspect, resolve, spawn, wait for readiness */
 static int model_boot(const char *tracker, const char *model, const char *shim,
                       const char *engines_dir, const char *engine_path,
-                      const char *local_dir, int ctx, int max_new, int cap_experts,
+                      const char *local_dir, const char *local_edge_dir,
+                      int ctx, int max_new, int cap_experts,
                       Engine *e, Swarm *sw) {
     char mtype[64] = "";
     memset(sw, 0, sizeof *sw);
@@ -3649,7 +3674,7 @@ static int model_boot(const char *tracker, const char *model, const char *shim,
             printf("  %sprovo una catena Segment completa; se manca uso "
                    "automaticamente expert/CAS%s\n", C_DIM, C_R);
             if (!segment_engine_spawn(segment_bin, shim, tracker, model,
-                                      mtype, ctx, e)) {
+                                       mtype, local_edge_dir, ctx, e)) {
                 g_eng.booting = 1;
                 g_eng.last_out = nowd();
                 g_eng.spinning = 1;
@@ -3719,7 +3744,7 @@ static int model_boot(const char *tracker, const char *model, const char *shim,
         printf("  %sora scarico la parte densa una volta sola — gli esperti "
                "restano sullo sciame%s\n", C_DIM, C_R);
 
-    if (engine_spawn(engine, shim, tracker, model, local_dir,
+    if (engine_spawn(engine, shim, tracker, model, local_edge_dir,
                      ctx, max_new, cap_experts, e)) return -1;
 
     g_eng.booting = 1;
@@ -3941,6 +3966,7 @@ static int cmd_chat(int argc, char **argv) {
     }
 
     if (model_boot(tracker, model, shim, engines_dir, engine_path, local_dir,
+                   model_dir_arg,
                    ctx, max_new, cap_experts, &eng, &sw))
         return 1;
     if (role.disk || role.compute) {
@@ -3999,6 +4025,7 @@ static int cmd_chat(int argc, char **argv) {
             }
             engine_stop(&eng);
             if (model_boot(tracker, model, shim, engines_dir, engine_path, local_dir,
+                           model_dir_arg,
                            ctx, max_new, cap_experts, &eng, &sw))
                 return 1;
             continue;

@@ -205,6 +205,7 @@ fails loudly instead of applying in the wrong place.
 | `kimi_k3` | Kimi K3 | yes | `expert_node_kimi`, proven by `phase2_kimi_test.sh` |
 | `deepseek` | DeepSeek V4 | yes | `expert_node_deepseek`, proven by `phase2_deepseek_test.sh` |
 | `qwen36` | Qwen3.6 | yes | `expert_node_qwen36`, proven by `phase2_qwen36_test.sh` |
+| `qwen38` | Qwen3.8 | Segment MVP | Colibri Segment ABI, initial support |
 
 "Proven" means the experiment, not the claim: the same engine and the same
 prompt, generated twice, once with the experts local and once with every one of
@@ -314,6 +315,13 @@ CPU team because decode traverses the chain serially. A resident Segment donor
 then replaces one exact range; it advertises measured RSS only after its engine
 has opened, and the server remains the fallback for every range not yet donated.
 `LUMABRI_SEGMENT_THREADS=N` is the explicit per-range CPU override.
+
+An existing model directory can be used directly; for example, run
+`lumabri serve --model /opt/models/qwen38` on the model owner and use the same
+directory as `--model-dir` for Segment nodes on machines that host a slice.
+Those processes read the model in place. The maintainer still publishes the
+model to the swarm, while `lumabri chat --local /opt/models/qwen38` bypasses
+the mirror entirely when inference should remain local to that machine.
 Within either origin or donor ranges, Segment Hybrid also delegates any fully
 covered MoE layer to strict-RAM Expert donors. Selected experts are sent in
 parallel; incomplete layers and failed donor calls execute locally. Thus even a
